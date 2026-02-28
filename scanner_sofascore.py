@@ -549,6 +549,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[WARN] Avvio Telegram: {e}")
 
+    # 👇 Il loop infinito deve esserci (indispensabile)
     while True:
         try:
             run_cycle()
