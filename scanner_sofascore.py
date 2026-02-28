@@ -14,7 +14,7 @@ import math
 import json
 import random
 import datetime
-from collections import deque, defaultdict
+from collections import deque, defaultdict, Counter  # ← Patch A: Counter per diagnostica status
 
 import requests
 from pytz import timezone
@@ -40,13 +40,14 @@ def _as_float_env(name: str, default: float) -> float:
     return float(raw.replace(",", "."))
 
 # Switch diagnostici/test (opzionali)
-DEBUG         = os.environ.get("DEBUG") == "1"
-FORCE_ALERT   = os.environ.get("FORCE_ALERT") == "1"     # invia un singolo alert di prova alla prima passata
-HEARTBEAT_MIN = int(os.environ.get("HEARTBEAT_MIN", "0"))  # 0 = disattivo; es. 30 = heartbeat ogni 30’
+DEBUG           = os.environ.get("DEBUG") == "1"
+FORCE_ALERT     = os.environ.get("FORCE_ALERT") == "1"     # invia un singolo alert di prova alla prima passata
+HEARTBEAT_MIN   = int(os.environ.get("HEARTBEAT_MIN", "0"))  # 0 = disattivo; es. 30 = heartbeat ogni 30’
+USE_MINUTE_ONLY = os.environ.get("USE_MINUTE_ONLY") == "1"   # ← Patch B: ignora status e usa solo minuto (20–88)
 
 # Obbligatorie
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
-TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")   # meglio ID numerico (es. 958994086). Per canali pubblici: @nomeCanale
+TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")   # meglio ID numerico (es. 958994086)
 
 # Parametri operativi (con default prudente)
 GOAL_PROB_THRESH = _as_float_env("GOAL_PROB_THRESH", 0.75)  # ≈ quota logica 1.33
@@ -322,12 +323,29 @@ def run_cycle():
     if DEBUG:
         print(f"[INFO] Eventi live trovati: {len(events)}")
 
+    # ===== Patch A: diagnostica sugli status =====
+    status_counts = Counter()
+    inprog_est = 0
+    for _ev in events:
+        s = (_ev.get("status", {}) or {}).get("type") \
+            or (_ev.get("status", {}) or {}).get("short") \
+            or (_ev.get("status", {}) or {}).get("description") \
+            or "unknown"
+        s_l = str(s).lower()
+        status_counts[s_l] += 1
+        if any(k in s_l for k in ("inprogress", "period", "1st half", "2nd half", "1sthalf", "2ndhalf")):
+            inprog_est += 1
+    if DEBUG:
+        top5 = ", ".join([f"{k}:{v}" for k, v in status_counts.most_common(5)])
+        print(f"[INFO] Distribuzione status (top5): {top5}")
+        print(f"[INFO] In progress stimati: {inprog_est}")
+
     # --- DIAGNOSTICA: tracciamo il miglior candidato del ciclo ---
     best = {"p": -1.0, "label": ""}
 
     for ev in events:
         try:
-            # Filtri robusti su sport/stato/minuto
+            # Filtri robusti su sport/minuto/status
             if (ev.get("sport", {}) or {}).get("slug") != "football":
                 continue
 
@@ -343,11 +361,19 @@ def run_cycle():
             except Exception:
                 minute = 0
 
-            # range prudente; per test puoi allargare 15..90 e poi ripristinare
-            if status not in ("inprogress", "inprogress_penaltyshootout", "period", "1st half", "2nd half"):
-                continue
-            if not (20 <= minute <= 88):
-                continue
+            # ===== Patch B: toggle minute-only in calibrazione =====
+            if USE_MINUTE_ONLY:
+                if minute <= 0:
+                    continue
+                if not (20 <= minute <= 88):
+                    continue
+            else:
+                status_norm = (str(status).strip().lower() if status else "")
+                allowed = ("inprogress", "inprogress_penaltyshootout", "period", "1st half", "2nd half")
+                if status_norm not in [a.lower() for a in allowed]:
+                    continue
+                if not (20 <= minute <= 88):
+                    continue
 
             eid  = ev.get("id")
             if not eid:
@@ -407,6 +433,7 @@ if __name__ == "__main__":
         if DEBUG:
             print(f"[INFO] Soglia corrente: {GOAL_PROB_THRESH}")
             print(f"[INFO] Polling ogni: {POLL_SEC}s | Finestra: {WINDOW_START_H}-{WINDOW_END_H}")
+            print(f"[INFO] USE_MINUTE_ONLY: {USE_MINUTE_ONLY}")
     except Exception as e:
         print(f"[WARN] Avvio Telegram: {e}")
 
