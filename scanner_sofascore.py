@@ -2,6 +2,8 @@ import os, time, math, json, datetime
 import requests
 from collections import deque, defaultdict
 from pytz import timezone
+FORCE_ALERT = os.environ.get("FORCE_ALERT") == "1"
+_force_sent = False
 
 # === Config ===
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
@@ -165,6 +167,10 @@ def format_alert(home, away, sh, sa, minute, p, st):
 
 def run_cycle():
     if not within_window():
+        global _force_sent
+if FORCE_ALERT and not _force_sent:
+    tg_send("🔔 FORCED TEST ALERT — percorso interno OK")
+    _force_sent = True
         return
     events = get_live_events()
     for ev in events:
