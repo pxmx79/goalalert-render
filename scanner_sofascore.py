@@ -4,8 +4,8 @@ from collections import deque, defaultdict
 from pytz import timezone
 
 # === Config ===
-TELEGRAM_TOKEN = os.environ["8729344890:AAGBpbeAn4yDcj9TUd-3RuGsphf6CGk15gc"]
-TELEGRAM_CHAT  = os.environ.get("@pxmx79")
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT", "@pxmx79")
 SOFA_BASE      = "https://api.sofascore.com/api/v1"   # endpoint JSON non ufficiali
 TZ             = timezone("Europe/Rome")
 
