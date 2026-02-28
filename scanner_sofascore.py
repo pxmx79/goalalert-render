@@ -417,14 +417,17 @@ def run_cycle():
             minute = extract_minute(ev)
 
             # criterio di ammissione
-            admitted = False
-            if USE_MINUTE_ONLY:
-                admitted = minute > 0
-            else:
-                admitted = (("inprogress" in s_norm or "period" in s_norm or "1st" in s_norm or "2nd" in s_norm)
-                            and minute > 0)
-            if not admitted:
-                continue
+admitted = False
+if USE_MINUTE_ONLY:
+    # calibrazione: se abbiamo un minuto >0 → ok,
+    # altrimenti se lo status è live → ammettiamo comunque con fallback di extract_minute (60')
+    admitted = (minute > 0) or ("inprogress" in s_norm or "period" in s_norm or "live" in s_norm
+                                or "1st" in s_norm or "first" in s_norm or "2nd" in s_norm or "second" in s_norm)
+else:
+    admitted = (("inprogress" in s_norm or "period" in s_norm or "1st" in s_norm or "2nd" in s_norm) and minute > 0)
+
+if not admitted:
+    continue
 
             # priorità semplice: minuto alto + punteggio ravvicinato
             sh = (ev.get("homeScore", {}) or {}).get("current", 0) or 0
