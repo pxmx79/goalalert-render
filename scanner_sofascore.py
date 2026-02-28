@@ -2,9 +2,10 @@ import os, time, math, json, datetime
 import requests
 from collections import deque, defaultdict
 from pytz import timezone
+# --- DEBUG & TEST SWITCHES ---
+DEBUG = os.environ.get("DEBUG") == "1"
 FORCE_ALERT = os.environ.get("FORCE_ALERT") == "1"
 _force_sent = False
-
 # === Config ===
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT", "@pxmx79")
@@ -167,22 +168,24 @@ def format_alert(home, away, sh, sa, minute, p, st):
 
 def run_cycle():
     if not within_window():
-    return
-     global _force_sent
+        return
+
+    # FORCED TEST: invia un solo alert di prova alla prima passata se FORCE_ALERT=1
+    global _force_sent
     if FORCE_ALERT and not _force_sent:
-    tg_send("🔔 FORCED TEST ALERT — percorso interno OK")
-    _force_sent = True
-    events = get_live_events()
-    for ev in events:
-        try:
-            if ev.get("sport", {}).get("slug") != "football":
-                continue
-            status = ev.get("status", {}).get("type")
-            minute = ev.get("time", {}).get("minute") or ev.get("matchTime", 0)
-            if status not in ("inprogress","inprogress_penaltyshootout","period"):
-                continue
-            if not (20 <= int(minute) <= 88):
-                continue
+        tg_send("🔔 FORCED TEST ALERT — percorso interno OK")
+        _force_sent = True
+
+    # Leggi eventi live in modo sicuro
+    try:
+        events = get_live_events() or []
+    except Exception as e:
+        if DEBUG:
+            print(f"[WARN] get_live_events: {e}")
+        return
+
+    if DEBUG:
+        print(f"[INFO] Eventi live trovati: {len(events)}")
 
             eid  = ev["id"]
             home = ev.get("homeTeam", {}).get("name","Home")
