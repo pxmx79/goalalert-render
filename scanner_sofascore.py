@@ -167,11 +167,11 @@ def format_alert(home, away, sh, sa, minute, p, st):
 
 def run_cycle():
     if not within_window():
-        global _force_sent
-if FORCE_ALERT and not _force_sent:
+    return
+     global _force_sent
+    if FORCE_ALERT and not _force_sent:
     tg_send("🔔 FORCED TEST ALERT — percorso interno OK")
     _force_sent = True
-        return
     events = get_live_events()
     for ev in events:
         try:
