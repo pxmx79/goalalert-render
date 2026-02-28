@@ -14,7 +14,7 @@ import math
 import json
 import random
 import datetime
-from collections import deque, defaultdict, Counter  # Patch A: Counter per diagnostica status
+from collections import deque, defaultdict, Counter
 
 import requests
 from pytz import timezone
@@ -36,16 +36,15 @@ def _as_float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if not raw:
         return default
-    # accetta 0,75 scritto con virgola ma converte a 0.75
-    return float(raw.replace(",", "."))
+    return float(raw.replace(",", "."))  # accetta 0,75 e converte a 0.75
 
 # Switch diagnostici/test (opzionali)
 DEBUG           = os.environ.get("DEBUG") == "1"
-FORCE_ALERT     = os.environ.get("FORCE_ALERT") == "1"     # invia un singolo alert di prova alla prima passata
-HEARTBEAT_MIN   = int(os.environ.get("HEARTBEAT_MIN", "0"))  # 0 = disattivo; es. 30 = heartbeat ogni 30’
-USE_MINUTE_ONLY = os.environ.get("USE_MINUTE_ONLY") == "1"   # Patch B: ignora status e usa solo minuto (20–88)
+FORCE_ALERT     = os.environ.get("FORCE_ALERT") == "1"
+HEARTBEAT_MIN   = int(os.environ.get("HEARTBEAT_MIN", "0"))    # 0 = off
+USE_MINUTE_ONLY = os.environ.get("USE_MINUTE_ONLY") == "1"     # calibrazione: ignora status, usa solo minuto
 
-# Calibrazione con floor (opzionale, disattivabile)
+# Calibrazione con floor (opzionale)
 CALIBRATION      = os.environ.get("CALIBRATION") == "1"
 FLOOR_PROB       = _as_float_env("FLOOR_PROB", 0.45)
 FLOOR_EVERY_MIN  = int(os.environ.get("FLOOR_EVERY_MIN", "15"))
@@ -53,19 +52,20 @@ _last_floor_send = 0.0
 
 # Obbligatorie
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
-TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")   # meglio ID numerico (es. 958994086)
+TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")
 
-# Parametri operativi (con default prudente)
-GOAL_PROB_THRESH = _as_float_env("GOAL_PROB_THRESH", 0.75)  # ≈ quota logica 1.33
+# Parametri operativi
+GOAL_PROB_THRESH = _as_float_env("GOAL_PROB_THRESH", 0.75)  # ≈ quota 1.33
 POLL_SEC         = int(os.environ.get("POLL_SEC", "45"))
 WINDOW_START_H   = int(os.environ.get("WINDOW_START_H", "10"))
 WINDOW_END_H     = int(os.environ.get("WINDOW_END_H",   "23"))
 
-# Throttle per match (max 1 alert ogni N minuti)
-ALERT_COOLDOWN_MIN = int(os.environ.get("ALERT_COOLDOWN_MIN", "12"))
-
-# Cool‑off dopo un gol nello stesso match (minuti)
+# Throttle per match (max 1 alert ogni N minuti) + cool‑off dopo gol
+ALERT_COOLDOWN_MIN     = int(os.environ.get("ALERT_COOLDOWN_MIN", "12"))
 COOLOFF_AFTER_GOAL_MIN = int(os.environ.get("COOLOFF_AFTER_GOAL_MIN", "5"))
+
+# Pre‑selezione: processa solo i top K candidati per ciclo
+TOP_K = int(os.environ.get("TOP_K", "40"))
 
 # Fuso e SofaScore
 TZ        = timezone("Europe/Rome")
@@ -77,11 +77,11 @@ HEADERS   = {"User-Agent": "Mozilla/5.0 (GoalAlertBot; +https://t.me/pxmx79)"}
 #        STATO / CACHE
 # =============================
 
-last_fetch_ts   = 0.0                            # rate‑limit morbido (~1 req/s globale)
-last_alert_ts   = {}                             # eid -> epoch ultimo alert
-recent_windows  = defaultdict(lambda: deque(maxlen=30))  # eid -> coda snapshots stats
-last_score      = {}                             # eid -> (home_goals, away_goals)
-last_goal_ts    = {}                             # eid -> epoch ultimo gol rilevato
+last_fetch_ts   = 0.0
+last_alert_ts   = {}
+recent_windows  = defaultdict(lambda: deque(maxlen=30))
+last_score      = {}
+last_goal_ts    = {}
 _force_sent     = False
 _last_heartbeat = 0.0
 
@@ -95,7 +95,6 @@ def within_window() -> bool:
     return datetime.time(WINDOW_START_H, 0) <= now <= datetime.time(WINDOW_END_H, 0)
 
 def tg_send(text: str):
-    """Invia un messaggio Telegram; non blocca se fallisce."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": TELEGRAM_CHAT, "text": text, "parse_mode": "HTML"}, timeout=10)
@@ -110,7 +109,6 @@ def _rate_limit_sleep():
         time.sleep(1.0 - delta)
 
 def get_json(url: str, max_retries: int = 4):
-    """GET JSON con retry/backoff e limite ~1 req/s."""
     global last_fetch_ts
     backoff = 1.0
     for attempt in range(1, max_retries + 1):
@@ -165,7 +163,6 @@ def _safe_num(v):
         except: return None
 
 def parse_stats(stats_json: dict) -> dict:
-    """Ritorna dict con: shots, sot, corners, poss (0..1), big."""
     out = {"home": {}, "away": {}}
     try:
         groups = []
@@ -199,7 +196,6 @@ def parse_stats(stats_json: dict) -> dict:
 # =============================
 
 def recent_features(event_id: int, base_stats: dict) -> dict:
-    """Costruisce feature 'recenti' su finestra scorrevole (momentum)."""
     recent_windows[event_id].append(base_stats)
     q = list(recent_windows[event_id])
     if len(q) < 4:
@@ -215,7 +211,6 @@ def recent_features(event_id: int, base_stats: dict) -> dict:
     }
 
 def goal_prob_next_15(stats_now: dict, feats_recent: dict, minute: int) -> float:
-    """Euristica logistica tarata per soglia ~0.75 in condizioni 'buone'."""
     shots_tot = sum([stats_now["home"].get("shots",   0) or 0,
                      stats_now["away"].get("shots",   0) or 0])
     sot_tot   = sum([stats_now["home"].get("sot",     0) or 0,
@@ -249,12 +244,10 @@ def goal_prob_next_15(stats_now: dict, feats_recent: dict, minute: int) -> float
 # =============================
 
 def should_alert(event_id: int) -> bool:
-    """Throttle: max 1 alert per match entro ALERT_COOLDOWN_MIN minuti."""
     t0 = last_alert_ts.get(event_id, 0.0)
     return (time.time() - t0) > (ALERT_COOLDOWN_MIN * 60.0)
 
 def _update_goal_cooloff(eid: int, home_goals: int, away_goals: int):
-    """Aggiorna cool‑off su variazione punteggio."""
     prev = last_score.get(eid)
     cur  = (home_goals, away_goals)
     if prev is None:
@@ -269,6 +262,58 @@ def _in_goal_cooloff(eid: int) -> bool:
         return False
     t0 = last_goal_ts.get(eid, 0.0)
     return (time.time() - t0) < (COOLOFF_AFTER_GOAL_MIN * 60.0)
+
+
+# =============================
+#    ESTRAZIONE “MINUTE”
+# =============================
+
+def extract_minute(ev: dict) -> int:
+    """
+    Prova più fonti per ottenere il minuto live:
+    1) time.minute
+    2) clock.sec // 60
+    3) currentPeriodStartTimestamp + status (stima)
+    4) fallback grossolano in base a '1st half' / '2nd half'
+    """
+    # 1) standard
+    minute = (ev.get("time", {}) or {}).get("minute")
+    if isinstance(minute, (int, float)) and minute > 0:
+        return int(minute)
+    # 2) clock.sec
+    sec = (ev.get("clock", {}) or {}).get("sec")
+    try:
+        if isinstance(sec, (int, float)) and sec > 0:
+            return int(sec // 60)
+    except Exception:
+        pass
+    # 3) stima con currentPeriodStartTimestamp
+    try:
+        cps = (ev.get("time", {}) or {}).get("currentPeriodStartTimestamp")
+        if isinstance(cps, (int, float)) and cps > 0:
+            now_ts = int(time.time())
+            elapsed = max(0, now_ts - int(cps))
+            base_min = int(elapsed // 60)
+            # se 2° tempo, aggiungiamo 45'
+            status = (ev.get("status", {}) or {}).get("type") \
+                     or (ev.get("status", {}) or {}).get("description") \
+                     or ""
+            s = str(status).lower()
+            if "2nd" in s or "second" in s:
+                base_min += 45
+            return base_min
+    except Exception:
+        pass
+    # 4) fallback grossolano dallo status
+    status = (ev.get("status", {}) or {}).get("type") \
+             or (ev.get("status", {}) or {}).get("description") \
+             or ""
+    s = str(status).lower()
+    if "1st" in s or "first" in s:
+        return 30   # stima conservativa per far passare il filtro
+    if "2nd" in s or "second" in s:
+        return 75
+    return 0
 
 
 # =============================
@@ -312,8 +357,9 @@ def run_cycle():
     if not within_window():
         return
 
-    # Alert di prova una‑tantum (se abilitato)
     global _force_sent
+
+    # Alert di prova una‑tantum (se abilitato)
     if FORCE_ALERT and not _force_sent:
         tg_send("🔔 FORCED TEST ALERT — percorso interno OK")
         _force_sent = True
@@ -329,7 +375,7 @@ def run_cycle():
     if DEBUG:
         print(f"[INFO] Eventi live trovati: {len(events)}")
 
-    # ===== Patch A: diagnostica sugli status =====
+    # Diagnostica status
     status_counts = Counter()
     inprog_est = 0
     for _ev in events:
@@ -338,4 +384,131 @@ def run_cycle():
             or (_ev.get("status", {}) or {}).get("description") \
             or "unknown"
         s_l = str(s).lower()
+        status_counts[s_l] += 1
+        if any(k in s_l for k in ("inprogress", "period", "1st half", "2nd half", "1sthalf", "2ndhalf")):
+            inprog_est += 1
+    if DEBUG:
+        top5 = ", ".join([f"{k}:{v}" for k, v in status_counts.most_common(5)])
+        print(f"[INFO] Distribuzione status (top5): {top5}")
+        print(f"[INFO] In progress stimati: {inprog_est}")
 
+    # --- Pre‑selezione candidati (TOP_K) ---
+    candidates = []
+    for ev in events:
+        try:
+            if (ev.get("sport", {}) or {}).get("slug") != "football":
+                continue
+
+            status = (ev.get("status", {}) or {}).get("type") \
+                     or (ev.get("status", {}) or {}).get("description") \
+                     or ""
+            s_norm = str(status).lower()
+
+            minute = extract_minute(ev)
+
+            # criterio di ammissione
+            admitted = False
+            if USE_MINUTE_ONLY:
+                admitted = minute > 0
+            else:
+                admitted = (("inprogress" in s_norm or "period" in s_norm or "1st" in s_norm or "2nd" in s_norm)
+                            and minute > 0)
+            if not admitted:
+                continue
+
+            # priorità semplice: minuto alto + punteggio ravvicinato
+            sh = (ev.get("homeScore", {}) or {}).get("current", 0) or 0
+            sa = (ev.get("awayScore", {}) or {}).get("current", 0) or 0
+            score_shape = 1 if abs(int(sh) - int(sa)) <= 1 else 0
+            late_bonus  = 1 if minute >= 70 else 0
+            activity    = 1 if (int(sh) + int(sa)) >= 2 else 0
+            priority    = (late_bonus * 3) + (score_shape * 2) + activity
+
+            candidates.append((priority, minute, ev))
+        except Exception:
+            continue
+
+    # ordina per priorità (desc), poi per minuto (desc)
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    to_process = candidates[:max(1, TOP_K)]
+    if DEBUG:
+        print(f"[INFO] Candidati pre-selezionati: {len(to_process)} (TOP_K={TOP_K})")
+
+    # --- Diagnostica: track best-of-cycle ---
+    best = {"p": -1.0, "label": ""}
+
+    # Elabora solo i top K
+    for _, minute, ev in to_process:
+        try:
+            eid  = ev.get("id")
+            if not eid:
+                continue
+
+            home = (ev.get("homeTeam", {}) or {}).get("name", "Home")
+            away = (ev.get("awayTeam", {}) or {}).get("name", "Away")
+
+            sh   = (ev.get("homeScore", {}) or {}).get("current", 0) or 0
+            sa   = (ev.get("awayScore", {}) or {}).get("current", 0) or 0
+
+            _update_goal_cooloff(eid, sh, sa)
+
+            st_json = get_stats(eid) or {}
+            st_now  = parse_stats(st_json)
+            feats   = recent_features(eid, st_now)
+            p_goal  = goal_prob_next_15(st_now, feats, minute)
+
+            if DEBUG:
+                try:
+                    print(f"[DBG] {home}-{away}  min {minute}  P(goal15)={p_goal:.2%}")
+                except Exception:
+                    pass
+
+            if p_goal > best["p"]:
+                best["p"] = p_goal
+                best["label"] = f"{home}-{away}  min {minute}  P={p_goal:.2%}"
+
+            if p_goal >= GOAL_PROB_THRESH and should_alert(eid) and not _in_goal_cooloff(eid):
+                last_alert_ts[eid] = time.time()
+                tg_send(format_alert(home, away, sh, sa, minute, p_goal, st_now))
+
+        except Exception as e:
+            if DEBUG:
+                print(f"[WARN] ciclo evento {ev.get('id')}: {e}")
+            continue
+
+    if DEBUG and best["p"] >= 0.0:
+        print(f"[INFO] Miglior candidato ciclo: {best['label']}")
+
+    # Calibrazione: 1 alert best-of-cycle ogni N minuti se sopra FLOOR_PROB
+    global _last_floor_send
+    if CALIBRATION and best["p"] >= FLOOR_PROB:
+        now = time.time()
+        if (now - _last_floor_send) > (FLOOR_EVERY_MIN * 60):
+            tg_send(f"🟡 Calibrazione: {best['label']}\n— floor {FLOOR_PROB:.0%}, max 1 ogni {FLOOR_EVERY_MIN}′")
+            _last_floor_send = now
+
+    _maybe_heartbeat()
+
+
+# =============================
+#              MAIN
+# =============================
+
+if __name__ == "__main__":
+    try:
+        tg_send("🟢 Scanner SofaScore (Railway) avviato.")
+        if DEBUG:
+            print(f"[INFO] Soglia corrente: {GOAL_PROB_THRESH}")
+            print(f"[INFO] Polling ogni: {POLL_SEC}s | Finestra: {WINDOW_START_H}-{WINDOW_END_H}")
+            print(f"[INFO] USE_MINUTE_ONLY: {USE_MINUTE_ONLY} | CALIBRATION: {CALIBRATION} | FLOOR: {FLOOR_PROB}")
+            print(f"[INFO] TOP_K: {TOP_K}")
+    except Exception as e:
+        print(f"[WARN] Avvio Telegram: {e}")
+
+    while True:
+        try:
+            run_cycle()
+        except Exception as e:
+            print(f"[WARN] ciclo principale: {e}")
+            time.sleep(2)
+        time.sleep(POLL_SEC)
