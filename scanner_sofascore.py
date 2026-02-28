@@ -270,49 +270,59 @@ def _in_goal_cooloff(eid: int) -> bool:
 
 def extract_minute(ev: dict) -> int:
     """
-    Prova più fonti per ottenere il minuto live:
+    Tenta più fonti per il minuto live, in ordine:
     1) time.minute
-    2) clock.sec // 60
-    3) currentPeriodStartTimestamp + status (stima)
-    4) fallback grossolano in base a '1st half' / '2nd half'
+    2) status.elapsed / status.minute
+    3) clock.sec // 60
+    4) currentPeriodStartTimestamp (+45' se 2° tempo)
+    5) fallback dallo status (1st/2nd) o 'inprogress' → 30/60/75
     """
-    # 1) standard
-    minute = (ev.get("time", {}) or {}).get("minute")
-    if isinstance(minute, (int, float)) and minute > 0:
-        return int(minute)
-    # 2) clock.sec
+    # 1) time.minute
+    m = (ev.get("time", {}) or {}).get("minute")
+    if isinstance(m, (int, float)) and m > 0:
+        return int(m)
+
+    # 2) status.elapsed / status.minute
+    st = (ev.get("status", {}) or {})
+    for k in ("elapsed", "minute"):
+        v = st.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+
+    # 3) clock.sec
     sec = (ev.get("clock", {}) or {}).get("sec")
-    try:
-        if isinstance(sec, (int, float)) and sec > 0:
-            return int(sec // 60)
-    except Exception:
-        pass
-    # 3) stima con currentPeriodStartTimestamp
+    if isinstance(sec, (int, float)) and sec > 0:
+        return int(sec // 60)
+
+    # 4) currentPeriodStartTimestamp
     try:
         cps = (ev.get("time", {}) or {}).get("currentPeriodStartTimestamp")
         if isinstance(cps, (int, float)) and cps > 0:
             now_ts = int(time.time())
             elapsed = max(0, now_ts - int(cps))
             base_min = int(elapsed // 60)
-            # se 2° tempo, aggiungiamo 45'
-            status = (ev.get("status", {}) or {}).get("type") \
-                     or (ev.get("status", {}) or {}).get("description") \
-                     or ""
-            s = str(status).lower()
-            if "2nd" in s or "second" in s:
+            s = str(st.get("type") or st.get("description") or "").lower()
+            if "2nd" in s or "second" in s or "2ndhalf" in s or "second-half" in s:
                 base_min += 45
             return base_min
     except Exception:
         pass
-    # 4) fallback grossolano dallo status
-    status = (ev.get("status", {}) or {}).get("type") \
-             or (ev.get("status", {}) or {}).get("description") \
-             or ""
-    s = str(status).lower()
-    if "1st" in s or "first" in s:
-        return 30   # stima conservativa per far passare il filtro
-    if "2nd" in s or "second" in s:
+
+    # 5) fallback dallo status
+    s = str(st.get("type") or st.get("short") or st.get("description") or "").lower()
+
+    # forme comuni “primo/secondo tempo”
+    if any(k in s for k in ("1st", "first", "1sthalf", "first-half")):
+        return 30
+    if any(k in s for k in ("2nd", "second", "2ndhalf", "second-half")):
         return 75
+
+    # se comunque è live/in progress, restituiamo un minuto “neutro”
+    if "inprogress" in s or "period" in s or "live" in s:
+        if DEBUG:
+            print("[DBG] minute non rilevato ma status live → fallback 60'")
+        return 60
+
     return 0
 
 
