@@ -36,7 +36,7 @@ def _as_float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if not raw:
         return default
-    return float(raw.replace(",", "."))  # accetta 0,75 e converte a 0.75
+    return float(raw.replace(",", "."))  # accetta 0,75 e converte in 0.75
 
 # Switch diagnostici/test (opzionali)
 DEBUG           = os.environ.get("DEBUG") == "1"
@@ -58,9 +58,9 @@ TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")
 GOAL_PROB_THRESH = _as_float_env("GOAL_PROB_THRESH", 0.75)  # ≈ quota 1.33
 POLL_SEC         = int(os.environ.get("POLL_SEC", "45"))
 WINDOW_START_H   = int(os.environ.get("WINDOW_START_H", "10"))
-WINDOW_END_H     = int(os.environ.get("WINDOW_END_H",   "23"))
+WINDOW_END_H     = int(os.environ.get("WINDOW_END_H", "23"))
 
-# Throttle per match (max 1 alert ogni N minuti) + cool‑off dopo gol
+# Throttle per match + cool‑off dopo gol
 ALERT_COOLDOWN_MIN     = int(os.environ.get("ALERT_COOLDOWN_MIN", "12"))
 COOLOFF_AFTER_GOAL_MIN = int(os.environ.get("COOLOFF_AFTER_GOAL_MIN", "5"))
 
@@ -99,7 +99,7 @@ _last_heartbeat = 0.0
 
 def within_window() -> bool:
     """
-    Ritorna True se l'ora corrente (TZ Europe/Rome) è dentro la finestra.
+    True se l'ora corrente (TZ Europe/Rome) è dentro la finestra.
     Robusta a input errati: clamp 0..23 e supporto wrap-around (es. 22→3).
     """
     try:
@@ -131,14 +131,14 @@ def tg_send(text: str):
             print(f"[WARN] tg_send fallita: {e}")
 
 def _rate_limit_sleep(min_interval: float = 1.0):
-    """Garantisce ~1 req/s (o più lento con min_interval) tra chiamate HTTP."""
+    """~1 req/s (o più lento con min_interval) tra chiamate HTTP."""
     global last_fetch_ts
     delta = time.time() - last_fetch_ts
     if delta < min_interval:
         time.sleep(min_interval - delta)
 
 def get_json(url: str, max_retries: int = 4, min_interval: float = 1.0):
-    """GET JSON con retry/backoff e rate‑limit morbido + log HTTP."""
+    """GET JSON con retry/backoff, rate‑limit e log HTTP."""
     global last_fetch_ts
     backoff = 1.0
     for attempt in range(1, max_retries + 1):
@@ -201,10 +201,12 @@ def get_stats(event_id: int):
 
 def _pct_to_float(v):
     if isinstance(v, str) and "%" in v:
-        try: return float(v.replace("%", ""))/100.0
-        except: return None
+        try:
+            return float(v.replace("%", "")) / 100.0
+        except Exception:
+            return None
     if isinstance(v, (int, float)):
-        return float(v)/100.0 if v > 1 else float(v)
+        return float(v) / 100.0 if v > 1 else float(v)
     return None
 
 def _safe_num(v):
@@ -212,9 +214,11 @@ def _safe_num(v):
         if isinstance(v, str) and "/" in v:
             v = v.split("(")[0].split("/")[0].strip()
         return int(v)
-    except:
-        try: return float(v)
-        except: return None
+    except Exception:
+        try:
+            return float(v)
+        except Exception:
+            return None
 
 def parse_stats(stats_json: dict) -> dict:
     out = {"home": {}, "away": {}}
@@ -265,14 +269,14 @@ def recent_features(event_id: int, base_stats: dict) -> dict:
     }
 
 def goal_prob_next_15(stats_now: dict, feats_recent: dict, minute: int) -> float:
-    shots_tot = sum([stats_now["home"].get("shots",   0) or 0,
-                     stats_now["away"].get("shots",   0) or 0])
-    sot_tot   = sum([stats_now["home"].get("sot",     0) or 0,
-                     stats_now["away"].get("sot",     0) or 0])
+    shots_tot = sum([stats_now["home"].get("shots", 0) or 0,
+                     stats_now["away"].get("shots", 0) or 0])
+    sot_tot   = sum([stats_now["home"].get("sot", 0) or 0,
+                     stats_now["away"].get("sot", 0) or 0])
     corners   = sum([stats_now["home"].get("corners", 0) or 0,
                      stats_now["away"].get("corners", 0) or 0])
-    bigc      = sum([stats_now["home"].get("big",     0) or 0,
-                     stats_now["away"].get("big",     0) or 0])
+    bigc      = sum([stats_now["home"].get("big", 0) or 0,
+                     stats_now["away"].get("big", 0) or 0])
 
     d_sh_h, d_sh_a = feats_recent.get("d_shots", (0, 0))
     d_so_h, d_so_a = feats_recent.get("d_sot",   (0, 0))
@@ -437,7 +441,7 @@ def run_cycle():
     try:
         events = get_live_events() or []
     except Exception as e:
-if DEBUG:
+        if DEBUG:
             print(f"[WARN] get_live_events: {e}")
         return
 
