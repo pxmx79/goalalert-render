@@ -437,7 +437,6 @@ def run_cycle():
     try:
         events = get_live_events() or []
     except Exception as e:
-       
 if DEBUG:
             print(f"[WARN] get_live_events: {e}")
         return
