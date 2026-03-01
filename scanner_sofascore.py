@@ -389,7 +389,6 @@ def extract_minute(ev: dict) -> int:
 #        FORMAT ALERT
 # =============================
 
-
 def format_alert(home, away, sh, sa, minute, p, st) -> str:
     sot_h = st["home"].get("sot", "-");  sot_a = st["away"].get("sot", "-")
     sh_h  = st["home"].get("shots", "-"); sh_a = st["away"].get("shots", "-")
@@ -438,7 +437,8 @@ def run_cycle():
     try:
         events = get_live_events() or []
     except Exception as e:
-        if DEBUG:
+       
+if DEBUG:
             print(f"[WARN] get_live_events: {e}")
         return
 
@@ -451,7 +451,6 @@ def run_cycle():
     for _ev in events:
         try:
             s_obj = (_ev.get("status", {}) or {})
-            # conteggiamo in base a tutte le varianti
             s_l = " ".join([
                 str(s_obj.get("type") or ""),
                 str(s_obj.get("short") or ""),
@@ -469,31 +468,42 @@ def run_cycle():
 
     # --- Pre‑selezione candidati (TOP_K) ---
     candidates = []
+    sample_printed = 0
+
     for ev in events:
         try:
-            if (ev.get("sport", {}) or {}).get("slug") != "football":
+            # (1) Filtro sport
+            slug = str(((ev.get("sport") or {}).get("slug")) or "")
+            if slug and slug != "football":
                 continue
 
+            # (2) Status normalizzato
             status_obj = (ev.get("status", {}) or {})
-            # s_norm: concat di type + short + description
             s_norm = " ".join([
                 str(status_obj.get("type") or ""),
                 str(status_obj.get("short") or ""),
                 str(status_obj.get("description") or "")
             ]).lower()
 
+            # (3) Minuto estratto
             minute = extract_minute(ev)
 
-            # criterio di ammissione
+            # (4) Criterio di ammissione
             tokens_live = ("inprogress", "period", "live", "1st", "first", "2nd", "second", "1sthalf", "2ndhalf")
             if USE_MINUTE_ONLY:
                 admitted = (minute > 0) or any(t in s_norm for t in tokens_live)
             else:
                 admitted = (any(t in s_norm for t in tokens_live) and minute > 0)
+
+            if DEBUG and sample_printed < 5:
+                eid_dbg = ev.get("id")
+                print(f"[DBG] sample eid={eid_dbg} | s_norm='{s_norm[:40]}' | minute={minute} | admitted={admitted}")
+                sample_printed += 1
+
             if not admitted:
                 continue
 
-            # priorità semplice: minuto alto + punteggio ravvicinato + attività
+            # (5) Priorità: minuto alto + punteggio ravvicinato + attività
             sh = (ev.get("homeScore", {}) or {}).get("current", 0) or 0
             sa = (ev.get("awayScore", {}) or {}).get("current", 0) or 0
             score_shape = 1 if abs(int(sh) - int(sa)) <= 1 else 0
@@ -502,7 +512,10 @@ def run_cycle():
             priority    = (late_bonus * 3) + (score_shape * 2) + activity
 
             candidates.append((priority, minute, ev))
-        except Exception:
+
+        except Exception as e:
+            if DEBUG:
+                print(f"[WARN] pre-selezione evento: {e}")
             continue
 
     # ordina per priorità (desc), poi per minuto (desc) e tieni TOP_K
@@ -512,6 +525,22 @@ def run_cycle():
         print(f"[INFO] Candidati pre-selezionati: {len(to_process)} (TOP_K={TOP_K})")
         if len(to_process) == 0:
             print("[WARN] Nessun candidato ammesso: controlla extract_minute/status. Abilita USE_MINUTE_ONLY=1 per calibrazione.")
+
+    # Fallback: se nessun candidato ma molti "live", processiamo comunque i primi TOP_K
+    if len(to_process) == 0 and inprog_est > 0:
+        fallback = []
+        limit = min(TOP_K, len(events))
+        for ev in events[:limit]:
+            try:
+                m = extract_minute(ev)
+                if m <= 0:
+                    m = 60  # minuto neutro
+                fallback.append((1, m, ev))
+            except Exception:
+                continue
+        to_process = fallback
+        if DEBUG:
+            print(f"[WARN] Fallback attivato: processati {len(to_process)} eventi (minuto stimato).")
 
     # --- Diagnostica: track best-of-cycle ---
     best = {"p": -1.0, "label": ""}
