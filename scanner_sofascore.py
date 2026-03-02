@@ -36,7 +36,7 @@ def _as_float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if not raw:
         return default
-    return float(raw.replace(",", "."))  # accetta 0,75 e converte in 0.75
+    return float(raw.replace(",", "."))  # accetta 0,75 e converte a 0.75
 
 # Switch diagnostici/test (opzionali)
 DEBUG           = os.environ.get("DEBUG") == "1"
@@ -50,6 +50,16 @@ FLOOR_PROB       = _as_float_env("FLOOR_PROB", 0.45)
 FLOOR_EVERY_MIN  = int(os.environ.get("FLOOR_EVERY_MIN", "15"))
 _last_floor_send = 0.0
 
+# BOUNDS minuti per l'alert (default 20..85)
+MINUTE_MIN = int(os.environ.get("MINUTE_MIN", "20"))
+MINUTE_MAX = int(os.environ.get("MINUTE_MAX", "85"))
+
+# Anti-ripetizione (invia solo se cambia qualcosa in modo significativo)
+REPEAT_ONLY_IF_CHANGED = os.environ.get("REPEAT_ONLY_IF_CHANGED", "1") == "1"
+CHANGE_MIN_DELTA_MIN   = int(os.environ.get("CHANGE_MIN_DELTA_MIN", "5"))   # minuti min trascorsi dall'ultimo alert
+CHANGE_MIN_DELTA_P     = _as_float_env("CHANGE_MIN_DELTA_P", 0.05)          # variazione minima P(goal15)
+CHANGE_MIN_DELTA_SOT   = int(os.environ.get("CHANGE_MIN_DELTA_SOT", "1"))   # incremento minimo SOT totali
+
 # Obbligatorie
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
 TELEGRAM_CHAT  = env_or_fail("TELEGRAM_CHAT")
@@ -60,7 +70,7 @@ POLL_SEC         = int(os.environ.get("POLL_SEC", "45"))
 WINDOW_START_H   = int(os.environ.get("WINDOW_START_H", "10"))
 WINDOW_END_H     = int(os.environ.get("WINDOW_END_H", "23"))
 
-# Throttle per match + cool‑off dopo gol
+# Throttle per match (max 1 alert ogni N minuti) + cool‑off dopo gol
 ALERT_COOLDOWN_MIN     = int(os.environ.get("ALERT_COOLDOWN_MIN", "12"))
 COOLOFF_AFTER_GOAL_MIN = int(os.environ.get("COOLOFF_AFTER_GOAL_MIN", "5"))
 
@@ -91,6 +101,10 @@ last_score      = {}
 last_goal_ts    = {}
 _force_sent     = False
 _last_heartbeat = 0.0
+
+# Stato per anti-ripetizione / goal da ultimo alert
+last_alert_state = {}          # eid -> {'minute': int, 'p': float, 'sot_h': int, 'sot_a': int}
+last_alert_score_at_send = {}  # eid -> (sh, sa) al momento dell'ultimo alert
 
 
 # =============================
@@ -393,17 +407,21 @@ def extract_minute(ev: dict) -> int:
 #        FORMAT ALERT
 # =============================
 
-def format_alert(home, away, sh, sa, minute, p, st) -> str:
+def format_alert(home, away, sh, sa, minute, p, st, tournament, goal_since_prev):
     sot_h = st["home"].get("sot", "-");  sot_a = st["away"].get("sot", "-")
     sh_h  = st["home"].get("shots", "-"); sh_a = st["away"].get("shots", "-")
     co_h  = st["home"].get("corners", "-"); co_a = st["away"].get("corners", "-")
-    bc_h  = st["home"].get("big", "-") or "-"
-    bc_a  = st["away"].get("big", "-") or "-"
+    bc_h  = st["home"].get("big");  bc_a  = st["away"].get("big")  # possono essere None
+    big_line = f"• Big Chances: {bc_h} – {bc_a}\n" if (bc_h is not None and bc_a is not None) else ""
+
     return (
+        f"🏆 <b>{tournament}</b>\n"
         f"⚽ <b>{home} {sh}-{sa} {away}</b>  ⏱️ {minute}'\n"
         f"• Prob. gol prossimi 15': <b>{p:.0%}</b>\n"
         f"• Tiri (SOT): {sh_h}({sot_h}) – {sh_a}({sot_a})\n"
-        f"• Corner: {co_h} – {co_a} | Big chances: {bc_h} – {bc_a}\n"
+        f"• Corner: {co_h} – {co_a}\n"
+        f"{big_line}"
+        f"• Gol dopo ultimo alert: <b>{'SÌ' if goal_since_prev else 'NO'}</b>\n"
         f"— filtro 1.33 attivo, alert 1–2 gol"
     )
 
@@ -420,6 +438,42 @@ def _maybe_heartbeat():
     if (now - _last_heartbeat) >= (HEARTBEAT_MIN * 60.0):
         tg_send("🔄 Heartbeat: scanner attivo")
         _last_heartbeat = now
+
+
+# =============================
+#           GATING CAMBIAMENTO
+# =============================
+
+def changed_enough(eid: int, minute: int, p: float, st_now: dict, sh: int, sa: int) -> bool:
+    """
+    True se vale la pena inviare un nuovo alert rispetto all'ultimo inviato per lo stesso match.
+    Logica:
+      - se è cambiato il punteggio → True (sempre)
+      - altrimenti devono essere passati almeno CHANGE_MIN_DELTA_MIN minuti
+      - e deve esserci variazione minima in P(goal15) O nei SOT totali
+    """
+    if not REPEAT_ONLY_IF_CHANGED:
+        return True
+
+    prev_score = last_alert_score_at_send.get(eid)
+    if prev_score and prev_score != (sh, sa):
+        return True  # c'è stato un gol: alert consentito
+
+    prev = last_alert_state.get(eid)
+    if prev is None:
+        return True
+
+    # vincolo tempo
+    if (minute - int(prev.get("minute", 0))) < CHANGE_MIN_DELTA_MIN:
+        return False
+
+    # variazioni quantitative
+    sot_h = st_now["home"].get("sot") or 0
+    sot_a = st_now["away"].get("sot") or 0
+    dp    = abs(p - float(prev.get("p", 0.0)))
+    dsot  = (sot_h - int(prev.get("sot_h", 0))) + (sot_a - int(prev.get("sot_a", 0)))
+
+    return (dp >= CHANGE_MIN_DELTA_P) or (dsot >= CHANGE_MIN_DELTA_SOT)
 
 
 # =============================
@@ -557,9 +611,14 @@ def run_cycle():
 
             home = (ev.get("homeTeam", {}) or {}).get("name", "Home")
             away = (ev.get("awayTeam", {}) or {}).get("name", "Away")
+            tournament = (ev.get("tournament", {}) or {}).get("name", "Unknown League")
 
             sh   = (ev.get("homeScore", {}) or {}).get("current", 0) or 0
             sa   = (ev.get("awayScore", {}) or {}).get("current", 0) or 0
+
+            # Limite minuti via ENV (default 20..85)
+            if not (MINUTE_MIN <= minute <= MINUTE_MAX):
+                continue
 
             _update_goal_cooloff(eid, sh, sa)
 
@@ -574,13 +633,30 @@ def run_cycle():
                 except Exception:
                     pass
 
+            # aggiorna best-of-cycle
             if p_goal > best["p"]:
                 best["p"] = p_goal
                 best["label"] = f"{home}-{away}  min {minute}  P={p_goal:.2%}"
 
-            if p_goal >= GOAL_PROB_THRESH and should_alert(eid) and not _in_goal_cooloff(eid):
+            # regole invio alert (incl. gating cambiamento)
+            if (p_goal >= GOAL_PROB_THRESH
+                and should_alert(eid)
+                and not _in_goal_cooloff(eid)
+                and changed_enough(eid, minute, p_goal, st_now, sh, sa)):
+
+                goal_since_prev = (last_alert_score_at_send.get(eid) != (sh, sa))
+
+                tg_send(format_alert(home, away, sh, sa, minute, p_goal, st_now, tournament, goal_since_prev))
+
+                # aggiorna gli stati "al momento dell'invio"
                 last_alert_ts[eid] = time.time()
-                tg_send(format_alert(home, away, sh, sa, minute, p_goal, st_now))
+                last_alert_state[eid] = {
+                    "minute": minute,
+                    "p": float(p_goal),
+                    "sot_h": st_now["home"].get("sot") or 0,
+                    "sot_a": st_now["away"].get("sot") or 0,
+                }
+                last_alert_score_at_send[eid] = (sh, sa)
 
         except Exception as e:
             if DEBUG:
@@ -612,7 +688,9 @@ if __name__ == "__main__":
             print(f"[INFO] Soglia corrente: {GOAL_PROB_THRESH}")
             print(f"[INFO] Polling ogni: {POLL_SEC}s | Finestra: {WINDOW_START_H}-{WINDOW_END_H}")
             print(f"[INFO] USE_MINUTE_ONLY: {USE_MINUTE_ONLY} | CALIBRATION: {CALIBRATION} | FLOOR: {FLOOR_PROB}")
-            print(f"[INFO] TOP_K: {TOP_K}")
+            print(f"[INFO] TOP_K: {TOP_K} | MINUTE_MIN..MAX: {MINUTE_MIN}..{MINUTE_MAX}")
+            print(f"[INFO] REPEAT_ONLY_IF_CHANGED={REPEAT_ONLY_IF_CHANGED} "
+                  f"| Δmin={CHANGE_MIN_DELTA_MIN} | ΔP={CHANGE_MIN_DELTA_P:.2f} | ΔSOT={CHANGE_MIN_DELTA_SOT}")
     except Exception as e:
         print(f"[WARN] Avvio Telegram: {e}")
 
