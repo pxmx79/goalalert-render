@@ -139,7 +139,31 @@ def within_window() -> bool:
 def tg_send(text: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": TELEGRAM_CHAT, "text": text, "parse_mode": "HTML"}, timeout=10)
+
+        # 1) invia a te (chat principale)
+        requests.get(
+            url,
+            params={
+                "chat_id": TELEGRAM_CHAT,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
+
+        # 2) invia anche al tuo amico (se configurato)
+        friend = os.environ.get("TELEGRAM_CHAT_FRIEND")
+        if friend:
+            requests.get(
+                url,
+                params={
+                    "chat_id": friend,
+                    "text": text,
+                    "parse_mode": "HTML",
+                },
+                timeout=10,
+            )
+
     except Exception as e:
         if DEBUG:
             print(f"[WARN] tg_send fallita: {e}")
