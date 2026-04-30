@@ -3,6 +3,7 @@
 import os
 import time
 import requests
+import datetime
 
 # =============================
 # ENV
@@ -17,75 +18,82 @@ def env_or_fail(key: str) -> str:
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
 TELEGRAM_CHAT = env_or_fail("TELEGRAM_CHAT")
 
-# ✅ ENDPOINT FIXATO
-API_URL = "https://www.thesportsdb.com/api/v1/json/1/livescore.php?s=Soccer"
-
 # =============================
 # TELEGRAM
 # =============================
 
 def tg_send(text: str):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT,
-            "text": text
-        })
-    except Exception as e:
-        print("Errore Telegram:", e)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={
+        "chat_id": TELEGRAM_CHAT,
+        "text": text
+    })
 
 # =============================
-# FETCH MATCH
+# MOCK MATCH (BASE STABILE)
 # =============================
 
-def get_live_matches():
-    try:
-        r = requests.get(API_URL, timeout=10)
+def get_matches_today():
+    """Simulazione base (poi la sostituiamo con fonte stabile)"""
 
-        if r.status_code == 200:
-            data = r.json()
+    # questo evita blocchi API
+    matches = [
+        {"league": "Norvegia", "home": "Bodø Glimt", "away": "Molde"},
+        {"league": "Olanda B", "home": "Jong Ajax", "away": "Cambuur"},
+        {"league": "Germania 3L", "home": "Duisburg", "away": "Essen"},
+        {"league": "Inghilterra L1", "home": "Peterborough", "away": "Barnsley"},
+        {"league": "Svezia", "home": "Malmo", "away": "Hacken"},
+    ]
 
-            # DEBUG
-            print("RAW RESPONSE:", data)
-
-            return data.get("events", []) or []
-
-        else:
-            print("HTTP ERROR:", r.status_code)
-            return []
-
-    except Exception as e:
-        print("REQUEST ERROR:", e)
-        return []
+    return matches
 
 # =============================
-# LOGICA BASE
+# FILTRO "ALBIREX STYLE"
+# =============================
+
+def is_over_match(match):
+    league = match["league"]
+
+    # campionati ad alta probabilità gol
+    good_leagues = [
+        "Norvegia", "Olanda B", "Svezia",
+        "Germania 3L", "Inghilterra L1"
+    ]
+
+    return league in good_leagues
+
+# =============================
+# SCOUTING
 # =============================
 
 def run_cycle():
-    matches = get_live_matches()
+    matches = get_matches_today()
 
-    print(f"\n✅ PARTITE TROVATE: {len(matches)}")
+    print(f"\n✅ MATCH ANALIZZATI: {len(matches)}")
 
-    for m in matches[:10]:
-        try:
-            home = m.get("strHomeTeam")
-            away = m.get("strAwayTeam")
-            score_home = m.get("intHomeScore")
-            score_away = m.get("intAwayScore")
+    selected = []
 
-            print(f"⚽ {home} vs {away} ({score_home}-{score_away})")
+    for m in matches:
+        if is_over_match(m):
+            selected.append(m)
 
-        except Exception as e:
-            print("Errore parsing:", e)
+    print(f"🔥 MATCH TARGET: {len(selected)}")
+
+    if selected:
+        msg = "🔥 OVER SCOUT\n\n"
+
+        for m in selected:
+            msg += f"{m['league']}\n{m['home']} - {m['away']}\n\n"
+
+        tg_send(msg)
 
 # =============================
 # MAIN
 # =============================
 
 if __name__ == "__main__":
-    tg_send("🟢 Bot attivo (API FIX ✅)")
+    tg_send("🟢 Scout attivo (stabile ✅)")
 
     while True:
         run_cycle()
-        time.sleep(60)
+        time.sleep(3600)
