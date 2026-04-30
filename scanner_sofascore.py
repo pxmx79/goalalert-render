@@ -11,7 +11,7 @@ import requests
 def env_or_fail(key: str) -> str:
     val = os.environ.get(key)
     if not val:
-        raise RuntimeError(f"Variabile d'ambiente mancante: {key}")
+        raise RuntimeError(f"Variabile mancante: {key}")
     return val
 
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
@@ -19,11 +19,23 @@ TELEGRAM_CHAT = env_or_fail("TELEGRAM_CHAT")
 
 SOFA_BASE = "https://api.sofascore.com/api/v1"
 
+# =============================
+# HEADERS (ANTI 403 🔥)
+# =============================
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-    "Referer": "https://www.sofascore.com/"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+    "Origin": "https://www.sofascore.com",
+    "Referer": "https://www.sofascore.com/",
+    "Connection": "keep-alive"
 }
+
+# ✅ SESSIONE PERSISTENTE (fondamentale)
+session = requests.Session()
+session.headers.update(HEADERS)
 
 # =============================
 # TELEGRAM
@@ -32,7 +44,7 @@ HEADERS = {
 def tg_send(text: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={
+        session.post(url, json={
             "chat_id": TELEGRAM_CHAT,
             "text": text
         })
@@ -45,7 +57,7 @@ def tg_send(text: str):
 
 def get_json(url):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
+        r = session.get(url, timeout=10)
         if r.status_code == 200:
             return r.json()
         else:
@@ -56,7 +68,7 @@ def get_json(url):
         return None
 
 # =============================
-# SOFASCORE FIX
+# SOFASCORE
 # =============================
 
 def get_live_events():
@@ -71,42 +83,41 @@ def get_stats(event_id: int):
     return get_json(url) or {}
 
 # =============================
-# LOGICA MINIMA (TEST)
+# TEST + DEBUG
 # =============================
 
 def run_cycle():
     events = get_live_events()
 
-    print(f"✅ PARTITE TROVATE: {len(events)}")
+    print(f"\n✅ PARTITE TROVATE: {len(events)}")
 
     if len(events) == 0:
         return
 
-    for ev in events[:5]:  # prendiamo solo le prime per test
+    for ev in events[:10]:  # primi 10 match
         try:
             home = ev["homeTeam"]["name"]
             away = ev["awayTeam"]["name"]
             eid = ev["id"]
 
-            print(f"{home} vs {away}")
+            print(f"\n⚽ {home} vs {away}")
 
             stats = get_stats(eid)
 
-            # debug stats
             if stats:
-                print(f"Stats OK per {home}-{away}")
+                print("✅ Stats OK")
             else:
-                print(f"Niente stats per {home}-{away}")
+                print("❌ Stats NON disponibili")
 
         except Exception as e:
-            print("Errore parsing match:", e)
+            print("Errore match:", e)
 
 # =============================
 # MAIN LOOP
 # =============================
 
 if __name__ == "__main__":
-    tg_send("🟢 Bot avviato correttamente")
+    tg_send("🟢 Bot avviato (FIX 403 attivo)")
 
     while True:
         try:
