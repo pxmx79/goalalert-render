@@ -17,25 +17,7 @@ def env_or_fail(key: str) -> str:
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
 TELEGRAM_CHAT = env_or_fail("TELEGRAM_CHAT")
 
-SOFA_BASE = "https://api.sofascore.com/api/v1"
-
-# =============================
-# HEADERS (ANTI 403 🔥)
-# =============================
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-    "Origin": "https://www.sofascore.com",
-    "Referer": "https://www.sofascore.com/",
-    "Connection": "keep-alive"
-}
-
-# ✅ SESSIONE PERSISTENTE (fondamentale)
-session = requests.Session()
-session.headers.update(HEADERS)
+API_URL = "https://www.thesportsdb.com/api/v1/json/3/livescore.php?s=Soccer"
 
 # =============================
 # TELEGRAM
@@ -44,7 +26,7 @@ session.headers.update(HEADERS)
 def tg_send(text: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        session.post(url, json={
+        requests.post(url, json={
             "chat_id": TELEGRAM_CHAT,
             "text": text
         })
@@ -52,77 +34,49 @@ def tg_send(text: str):
         print("Errore Telegram:", e)
 
 # =============================
-# HTTP
+# FETCH MATCH
 # =============================
 
-def get_json(url):
+def get_live_matches():
     try:
-        r = session.get(url, timeout=10)
+        r = requests.get(API_URL, timeout=10)
         if r.status_code == 200:
-            return r.json()
+            data = r.json()
+            return data.get("events", [])
         else:
             print("HTTP ERROR:", r.status_code)
-            return None
+            return []
     except Exception as e:
         print("REQUEST ERROR:", e)
-        return None
-
-# =============================
-# SOFASCORE
-# =============================
-
-def get_live_events():
-    url = f"{SOFA_BASE}/sport/football/events/live"
-    data = get_json(url)
-    if not data:
         return []
-    return data.get("events", [])
-
-def get_stats(event_id: int):
-    url = f"{SOFA_BASE}/event/{event_id}/statistics"
-    return get_json(url) or {}
 
 # =============================
-# TEST + DEBUG
+# LOGICA BASE
 # =============================
 
 def run_cycle():
-    events = get_live_events()
+    matches = get_live_matches()
 
-    print(f"\n✅ PARTITE TROVATE: {len(events)}")
+    print(f"\n✅ PARTITE TROVATE: {len(matches)}")
 
-    if len(events) == 0:
-        return
-
-    for ev in events[:10]:  # primi 10 match
+    for m in matches[:10]:
         try:
-            home = ev["homeTeam"]["name"]
-            away = ev["awayTeam"]["name"]
-            eid = ev["id"]
+            home = m.get("strHomeTeam")
+            away = m.get("strAwayTeam")
+            score = f"{m.get('intHomeScore')}-{m.get('intAwayScore')}"
 
-            print(f"\n⚽ {home} vs {away}")
-
-            stats = get_stats(eid)
-
-            if stats:
-                print("✅ Stats OK")
-            else:
-                print("❌ Stats NON disponibili")
+            print(f"⚽ {home} vs {away} ({score})")
 
         except Exception as e:
-            print("Errore match:", e)
+            print("Errore parsing:", e)
 
 # =============================
-# MAIN LOOP
+# MAIN
 # =============================
 
 if __name__ == "__main__":
-    tg_send("🟢 Bot avviato (FIX 403 attivo)")
+    tg_send("🟢 Bot attivo (no SofaScore ✅)")
 
     while True:
-        try:
-            run_cycle()
-        except Exception as e:
-            print("Errore ciclo:", e)
-
+        run_cycle()
         time.sleep(60)
