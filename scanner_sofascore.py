@@ -17,7 +17,8 @@ def env_or_fail(key: str) -> str:
 TELEGRAM_TOKEN = env_or_fail("TELEGRAM_TOKEN")
 TELEGRAM_CHAT = env_or_fail("TELEGRAM_CHAT")
 
-API_URL = "https://www.thesportsdb.com/api/v1/json/3/livescore.php?s=Soccer"
+# ✅ ENDPOINT FIXATO
+API_URL = "https://www.thesportsdb.com/api/v1/json/1/livescore.php?s=Soccer"
 
 # =============================
 # TELEGRAM
@@ -40,12 +41,19 @@ def tg_send(text: str):
 def get_live_matches():
     try:
         r = requests.get(API_URL, timeout=10)
+
         if r.status_code == 200:
             data = r.json()
-            return data.get("events", [])
+
+            # DEBUG
+            print("RAW RESPONSE:", data)
+
+            return data.get("events", []) or []
+
         else:
             print("HTTP ERROR:", r.status_code)
             return []
+
     except Exception as e:
         print("REQUEST ERROR:", e)
         return []
@@ -63,9 +71,10 @@ def run_cycle():
         try:
             home = m.get("strHomeTeam")
             away = m.get("strAwayTeam")
-            score = f"{m.get('intHomeScore')}-{m.get('intAwayScore')}"
+            score_home = m.get("intHomeScore")
+            score_away = m.get("intAwayScore")
 
-            print(f"⚽ {home} vs {away} ({score})")
+            print(f"⚽ {home} vs {away} ({score_home}-{score_away})")
 
         except Exception as e:
             print("Errore parsing:", e)
@@ -75,7 +84,7 @@ def run_cycle():
 # =============================
 
 if __name__ == "__main__":
-    tg_send("🟢 Bot attivo (no SofaScore ✅)")
+    tg_send("🟢 Bot attivo (API FIX ✅)")
 
     while True:
         run_cycle()
